@@ -1,0 +1,489 @@
+---
+title: "STAT443 Final Project Code"
+author: Group 1 
+---
+
+# Regression
+This section is Nidhi's code.
+
+```{r, include=TRUE}
+library(MASS)
+dat0 <- read.csv("hourly_temperature.csv")
+
+# Split Date.Time into more columns
+dat0$Date <- str_split_fixed(dat0$Date.Time, " ", 2)[,1]
+dat0$Time <- str_split_fixed(dat0$Date.Time, " ", 2)[,2]
+dat0$Hour <- as.numeric(str_split_fixed(dat0$Time, ":", 2)[,1])
+dat0$Year <- as.numeric(str_split_fixed(dat0$Date, fixed("."), 3)[,3])
+dat0$Month <- as.numeric(str_split_fixed(dat0$Date, fixed("."), 3)[,2])
+dat0$Day <- as.numeric(str_split_fixed(dat0$Date, fixed("."), 3)[,1])
+
+dat0 = dat0[,!(names(dat0)%in%c("Date.Time"))]
+
+# Remove time columns and Celcius
+drop = c("Date", "Month", "Year", "Time", "Hour", "Day")
+dat1 = dat0[,!(names(dat0)%in%drop)]
+drop2 = c("T..degC.")
+dat0 = dat0[,!(names(dat0)%in%drop2)]
+dat1 = dat1[,!(names(dat1)%in%drop2)]
+head(dat1)
+summary(dat1)
+Y=dat1$Tpot..K.
+Model1 = lm(Tpot..K.~., data=dat1)
+step.model <- stepAIC(Model1, direction = "both", trace = FALSE)
+summary(step.model)
+```
+Notes:
+
+1. Used Kelvin instead of Celcius to eliminate issues with zero/negative values
+2. Used Stepwise selection to cut variables down to 9 from 14
+3. Excluded time variable for now
+
+```{r, include=TRUE}
+#Training and testing splits - change to 2016 test only
+dt = seq(from = 61331, to = 70091, by = 1)
+train_split = dat1[-dt,]
+test_split = dat1[dt,]
+```
+
+```{r, include=TRUE}
+library(glmnet)
+drop3 = c("Tpot..K.")
+xtemp = as.matrix(train_split[,!(names(dat1)%in%drop3)])
+ytemp = train_split$Tpot..K.
+
+CV = cv.glmnet(xtemp, ytemp, alpha = 1)
+CV
+fit.LASSO.range=glmnet(xtemp , ytemp , alpha=1 , lambda=CV$lambda.min, standardize=TRUE, intercept = FALSE ,  family = "gaussian")
+
+summary(fit.LASSO.range)
+
+library(lars)
+house.lasso = lars(xtemp, ytemp, type="lasso")
+house.lasso
+plot(house.lasso)
+
+house.step <- lars(xtemp, ytemp, type="step")
+house.step
+plot(house.step)
+
+Stepwisemod = lm(formula = Tpot..K. ~ p..mbar. + Tdew..degC. + rh.... + VPmax..mbar. + 
+    VPact..mbar. + VPdef..mbar. + sh..g.kg. + H2OC..mmol.mol. + 
+    rho..g.m..3., data = train_split)
+lassomod = lm(formula = Tpot..K. ~ rho..g.m..3. + VPmax..mbar. + Tdew..degC. + rh.... + p..mbar. + VPdef..mbar., data = train_split)
+forwardmod = lm(formula = Tpot..K. ~ rho..g.m..3. + p..mbar.+ VPdef..mbar. + sh..g.kg. + rh.... + wd..deg., data = train_split)
+
+mnsqfcn = function(n, Y, yhat)
+{
+  (1/n)*sum((Y - yhat)^2)
+}
+
+mnsqfcn(24*365,test_split$Tpot..K.,predict(Stepwisemod, test_split))
+mnsqfcn(24*365,test_split$Tpot..K.,predict(lassomod, test_split))
+mnsqfcn(24*365,test_split$Tpot..K.,predict(forwardmod, test_split))
+```
+Regression - step 1: Variable selection
+1. Ran Stepwise(bidirectional), LASSO, and Forward selection to determine the best variables to include besides time
+2. Classic stepwise has 9 variables, LASSO and Forward had 6 that we decided on from our cross-validated lambda (both lambda.min and lambda1se dictated 6 variables, so no further comparison was required).
+3. Running the MSE functions we see that the lowest MSE goes with classic Stepwise, in likelihood due to the additional variables (unconstrained), but selection provides a better MSE even constrained (LASSO vs Forward). In the interest of best MSE while keeping parameters low and reasonable, we choose LAR-given Forward selection as our final selector, taking those 6 variables to test alongside time.
+
+Adding in time:
+```{r}
+train_splittime = dat0[-dt,]
+test_splittime = dat0[dt,]
+
+msqvec = rep(0,14)
+for (p in seq(from = 2, to = 15, by = 1))
+{
+modelp = lm(Tpot..K. ~ poly(Hour,p) + rho..g.m..3. + p..mbar.+ VPdef..mbar. + sh..g.kg. + rh.... + wd..deg., data = train_splittime)
+yhatmain = predict(modelp, newdata = test_splittime)
+msqvec[p-1] = mnsqfcn(25,test_splittime$Tpot..K.,yhatmain)
+}
+
+plot(msqvec)
+which.min(msqvec)
+msqvec[which.min(msqvec)]
+
+msqvec2 = rep(0,14)
+for (q in seq(from = 2, to = 15, by = 1))
+{
+modelq = lm(Tpot..K. ~ poly(Day,q) + rho..g.m..3. + p..mbar.+ VPdef..mbar. + sh..g.kg. + rh.... + wd..deg., data = train_splittime)
+yhatmain = predict(modelq, newdata = test_splittime)
+msqvec2[q-1] = mnsqfcn(25,test_splittime$Tpot..K.,yhatmain)
+}
+
+plot(msqvec2)
+which.min(msqvec2)
+msqvec2[which.min(msqvec2)]
+
+msqvec3 = rep(0,14)
+for (r in seq(from = 2, to = 10, by = 1))
+{
+modelr = lm(Tpot..K. ~ poly(Month,r) + rho..g.m..3. + p..mbar.+ VPdef..mbar. + sh..g.kg. + rh.... + wd..deg., data = train_splittime)
+yhatmain = predict(modelr, newdata = test_splittime)
+msqvec3[r-1] = mnsqfcn(25,test_splittime$Tpot..K.,yhatmain)
+}
+
+plot(msqvec3)
+which.min(msqvec3)
+msqvec2[which.min(msqvec3)]
+
+msqvec4 = rep(0,14)
+for (s in seq(from = 2, to = 6, by = 1))
+{
+models = lm(Tpot..K. ~ poly(Year, s) + rho..g.m..3. + p..mbar.+ VPdef..mbar. + sh..g.kg. + rh.... + wd..deg., data = train_splittime)
+yhatmain = predict(models, newdata = test_splittime)
+msqvec4[s-1] = mnsqfcn(25,test_splittime$Tpot..K.,yhatmain)
+}
+
+plot(msqvec4)
+which.min(msqvec4)
+msqvec2[which.min(msqvec4)]
+
+modelalltime = lm(Tpot..K. ~ Year + Month + Day + Hour + rho..g.m..3. + p..mbar.+ VPdef..mbar. + sh..g.kg. + rh.... + wd..deg., data = train_splittime)
+modelpolytime = lm(Tpot..K. ~ poly(Year,6) + poly(Month,10) + poly(Day,2) + poly(Hour,6) + rho..g.m..3. + p..mbar.+ VPdef..mbar. + sh..g.kg. + rh.... + wd..deg., data = train_splittime)
+modelHr = lm(Tpot..K. ~ poly(Hour,6) + rho..g.m..3. + p..mbar.+ VPdef..mbar. + sh..g.kg. + rh.... + wd..deg., data = train_splittime)
+modelDay = lm(Tpot..K. ~ poly(Day,2) + rho..g.m..3. + p..mbar.+ VPdef..mbar. + sh..g.kg. + rh.... + wd..deg., data = train_splittime)
+modelMonth = lm(Tpot..K. ~ poly(Month,10) + rho..g.m..3. + p..mbar.+ VPdef..mbar. + sh..g.kg. + rh.... + wd..deg., data = train_splittime)
+modelYear = lm(Tpot..K. ~ poly(Year,6) + rho..g.m..3. + p..mbar.+ VPdef..mbar. + sh..g.kg. + rh.... + wd..deg., data = train_splittime)
+
+mnsqfcn(24*365,test_splittime$Tpot..K.,predict(modelalltime, test_splittime))
+mnsqfcn(24*365,test_splittime$Tpot..K.,predict(modelpolytime, test_splittime))
+mnsqfcn(24*365,test_splittime$Tpot..K.,predict(modelHr, test_splittime))
+mnsqfcn(24*365,test_splittime$Tpot..K.,predict(modelDay, test_splittime))
+mnsqfcn(24*365,test_splittime$Tpot..K.,predict(modelMonth, test_splittime))
+mnsqfcn(24*365,test_splittime$Tpot..K.,predict(modelYear, test_splittime))
+
+```
+
+Multiple models were tested, purely on MSE:
+1. Each time variable was tested by MSE in a for loop to determine the ideal degree if we were to use it by itself as an orthogonal polynomial.
+2. These were then tested against a model that contained all time variables to one degree, all of them to their optimized degree and to each other individually
+3. The best MSE happens to be the monthly model, with only month included, to a degree of 10, affirming the effect of the annual seasonality.
+
+Our final model to compare against our other methods is:
+
+```{r}
+summary(modelMonth)
+predMonth = predict(modelMonth, newdata = test_splittime)
+plot(test_splittime$Tpot..K.)
+lines(predMonth, col = "red", type = "l")
+plot(resid(modelMonth))
+acf(resid(modelMonth))
+mnsqfcn(24*365,test_splittime$Tpot..K.,predict(modelMonth, test_splittime))
+
+library(car)
+par(mfrow=c(2,2))
+plot(modelMonth$fitted, modelMonth$residuals)
+qqPlot(modelMonth$residuals, pch=16)
+plot(modelMonth$residuals)
+abline(h=0, lty=2, col='red')
+acf(modelMonth$residuals)
+
+```
+As seen above, it is a very high fit against the test set, probably in part due to a high number of parameters that are not penalized due to the large amount of data. The high degree for the month variable might be a cause for concern but will be gauged against other time models to confirm. The ACF confirms that we've left further seasonality in the residuals:
+
+```{r}
+regresid = resid(modelMonth)
+diffreg1 = diff(regresid)
+plot(diffreg1)
+acf(diffreg1)
+diffreg2 = diff(diffreg1, lag = 24)
+plot(diffreg2)
+acf(diffreg2)
+pacf(diffreg2)
+```
+There's exp decay in ACF and PACF both at regular and seasonal lags. Therefore a SARIMA (1,1,1,1,1,24) seems appropriate:
+
+```{r}
+regsarima = sarima(regresid, p=1, d=1, q=1, P=1,D=1, Q=1, S=24, details=TRUE)
+regsarresid = residuals(regsarima$fit)
+plot(regsarresid)
+acf(regsarresid, lag.max = 200)
+pacf(regsarresid, lag.max = 200)
+```
+This is clearly an ACF and PACF with damped sinusoid/exp decay, therefore we try another ARMA. For the purposes of this report, we tried combinations from ARMA (0,0) to ARMA(3,3) and found none of them improved our ACF/PACF (used Box-Ljung to confirm).
+
+```{r}
+regarma = arima(regsarresid, order=c(3,0,3))
+regarmaresid = residuals(regarma)
+plot(regarmaresid)
+acf(regarmaresid, lag.max = 100)
+pacf(regarmaresid, lag.max = 100)
+Box.test(regarmaresid, lag = 12, fitdf = 6, type = "Ljung")
+
+```
+
+Therefore we go ahead with our regression + SARIMA model, and predict on that to obtain an MSE to compare. Unfortunately due to computational constraints, ARIMAX wasn't possible to predict on our regression model with SARIMA errors, so we've provided an estimate (intervals didn't make sense as our normal assumptions do not hold for the regression model as seen in the normality testing).
+
+
+```{r}
+pred2016 = predict(modelMonth, test_splittime)[1:8760]
+SARforecast = sarima.for(regresid, n.ahead=24*365, 
+                              p=1,d=1,q=1,P=1,D=1,Q=1,S=24)$pred
+finalfit = pred2016 + SARforecast
+acf(finalfit)
+pacf(finalfit)
+par(mfrow = c(1,2))
+plot(finalfit)
+mnsqfcn(24*365,test_split$Tpot..K.[1:8760],finalfit)
+
+```
+
+------
+
+# Smoothing and Box-Jenkins
+This section is Kanika's code.
+
+## Import Data
+```{r}
+data <- read.csv('hourly_temperature.csv')
+```
+
+```{r}
+head(data)
+```
+We clean our data to split the date information and only keep these columns and the temperature for smoothing and Box-Jenkins.
+```{r}
+library(stringr)
+```
+
+```{r}
+data$Date <- str_split_fixed(data$Date.Time, " ", 2)[,1]
+data$Time <- str_split_fixed(data$Date.Time, " ", 2)[,2]
+data$Hour <- as.numeric(str_split_fixed(data$Time, ":", 2)[,1])
+data$Year <- as.numeric(str_split_fixed(data$Date, fixed("."), 3)[,3])
+data$Month <- as.numeric(str_split_fixed(data$Date, fixed("."), 3)[,2])
+data$Day <- as.numeric(str_split_fixed(data$Date, fixed("."), 3)[,1])
+```
+
+```{r}
+data <- data[c("Year", "Month", "Day", "Hour", "Tpot..K.")]
+names(data) <- c("Year", "Month", "Day", "Hour", "Temperature")
+
+head(data)
+```
+```{r}
+tail(data)
+```
+```{r}
+dim(data)
+```
+
+```{r}
+hist(data$Temperature)
+```
+
+Now, we want to create the `ts` object to build our time-series models. We will be using hourly data so our frequency is 12 and we start on January 1, 2009, 1:00 AM and end on December 31, 2016 11:00 PM.
+
+```{r}
+data_ts <- ts(data$Temperature, start=c(2009,1,1,1), frequency=24*365.25)
+
+length(data_ts)
+```
+
+We want to split our data into train and testing. We want to train our data based on 2009-2015 and then predict based on the last year. 
+
+```{r include=FALSE}
+library(TSstudio)
+```
+
+```{r}
+split <- ts_split(data_ts, sample.out=24*365.25)
+train <- split$train
+test <- split$test
+```
+
+## Data Analysis
+
+We plot the acf and pacf for our full dataset. 
+```{r}
+plot(data_ts, ylab='Air Temperature (Kelvin)', main='Air Temperature vs. Time')
+```
+```{r}
+acf(data_ts)
+```
+```{r fig.width=5, fig.height=5}
+decomp <- decompose(data_ts)
+plot(decomp)
+```
+
+## Smoothing Methods
+
+We will run smoothing on our training dataset.
+
+We will use MSE to compare the prediction power of each of the models on the test set.
+```{r}
+mse_pred <- function(y_true, y_pred) {
+  mean((y_true - y_pred)^2)
+}
+```
+
+
+### Simple Exponential Smoothing
+```{r}
+simpleExp <- HoltWinters(train, beta=FALSE, gamma=FALSE)
+simpleExp_pred <- predict(simpleExp, n.ahead=24*365.25)
+
+plot(data_ts, ylab='Temperature', main='Air Temperature vs. Time')
+lines(simpleExp$fitted[,1], col='blue')
+lines(simpleExp_pred, col='red')
+```
+
+### Double Exponential Smoothing
+```{r}
+doubleExp <- HoltWinters(train, gamma=FALSE)
+doubleExp_pred <- predict(doubleExp, n.ahead=24*365.25)
+
+plot(data_ts, ylab='Temperature', main='Air Temperature vs. Time')
+lines(doubleExp$fitted[,1], col='blue')
+lines(doubleExp_pred, col='red')
+```
+
+### Holt-Winters Additive
+
+```{r}
+additiveHW <- HoltWinters(train, seasonal='additive')
+additiveHW_pred <- predict(additiveHW, n.ahead=24*365.25)
+
+plot(data_ts, ylab='Temperature', main='Air Temperature vs. Time')
+lines(additiveHW$fitted[,1], col='blue')
+lines(additiveHW_pred, col='red')
+```
+
+
+### Holt-Winters Multiplicative
+
+```{r}
+multHW <- HoltWinters(train, seasonal='multiplicative')
+multHW_pred <- predict(multHW, n.ahead=24*365.25)
+
+plot(data_ts, ylab='Temperature', main='Air Temperature vs. Time')
+lines(multHW$fitted[,1], col='blue')
+lines(multHW_pred, col='red')
+```
+
+We'll choose the best model for smoothing based on the prediction since our final goal is to forecast temperature.
+```{r}
+mse_es <- mse_pred(test, simpleExp_pred)
+mse_des <- mse_pred(test, doubleExp_pred)
+mse_addhw <- mse_pred(test, additiveHW_pred)
+mse_multhw <- mse_pred(test, multHW_pred)
+
+cbind(mse_es, mse_des, mse_addhw, mse_multhw)
+```
+
+We use the Holt-Winters additive model to obtain our residuals since it gives us the lowest predictive MSE; hence, it will be the best smoothing method to use on our training data. We will then compare the Holt-Winters predictions to our SARIMA model that we get using differencing.
+
+```{r}
+res1 <- residuals(additiveHW)
+plot(res1, ylab='Residual')
+```
+
+The plot of residuals looks randomly distributed.
+```{r}
+acf(res1)
+```
+```{r}
+pacf(res1)
+```
+
+However, we can still see a periodic trend in the acf. Hence, differencing may provide us with better results. We will compare these smoothing results (with our fit) to the results from differencing with our training data to decide which model to go forward with for prediction. 
+
+### Differencing
+```{r}
+plot(train, ylab='Residuals')
+```
+```{r}
+acf(train)
+```
+
+```{r}
+diff1 = diff(train)
+plot(diff1)
+acf(diff1)
+```
+There is still seasonality so we use seasonal differencing on lag 24 since that is our period.
+
+```{r}
+diff2 = diff(diff1, lag=24)
+plot(diff2, ylab='Residuals')
+acf(diff2)
+```
+
+We have more stationary data but we notice that we have a lag sticking out at lag 24 so we approach this with a double SARIMA model (two SARIMA models). This is a better plot than our Holt-Winters additive model; hence, we will use SARIMA with d=1. D=2, S=24. 
+
+## Box-Jenkins
+
+To decide our proposed models, we need to plot the acf and pacf of our residuals. These residuals are obtained using Holt-Winters additive model and differencing. 
+
+### Differencing Residuals
+```{r}
+acf(diff2, lag.max=100)
+```
+
+```{r}
+pacf(diff2, lag.max=100)
+```
+Our proposed model would be $SARIMA(1, 1, 1) \times (1,1,1)_{24}$.
+
+### Fitting Models
+
+First, we want to run SARIMA with S=24. Then, we will likely have seasonal dependency structure that is not included in our first model that we need to account for. 
+```{r}
+library(astsa)
+```
+
+```{r}
+model1 <- sarima(train, p=1, d=1, q=1, P=1,D=1, Q=1, S=24, details=TRUE)
+yt <- residuals(model1$fit)
+```
+We make an assumption to let $Y_t$ be the residuals from our first SARIMA model. We will then assume that since there is seasonality still in our residuals, we can model this with another SARIMA with S=12 for monthly periodicity.
+
+```{r}
+acf(yt, lag.max=100)
+```
+
+```{r}
+pacf(yt, lag.max=100)
+```
+
+We have a MA(24) model and set differencing to zero. 
+
+```{r}
+model2 <- sarima(yt, p=0, d=0, q=24, P=1,D=0, Q=1, S=12, details=TRUE)
+```
+
+```{r}
+model2$fit
+```
+```{r}
+res2 <- resid(model2$fit)
+acf(res2, lag.max=100)
+```
+
+```{r}
+pacf(res2, max.lag=100)
+```
+
+```{r}
+library(car)
+```
+
+```{r}
+qqPlot(res2)
+```
+
+Then, we are making an assumption here that they are not correlated. 
+
+```{r}
+doubleSarima = sarima.for(yt, p=0, d=0, q=24, P=1,D=0, Q=1, S=12, details=TRUE, n.ahead=24*365.25)
+doubleSarima
+```
+
+```{r}
+mse_sarima <- mse_pred(test, doubleSarima$pred)
+mse_sarima
+```
+
+
